@@ -1,0 +1,18 @@
+{
+  "name": "Vehicle Returns AI Review",
+  "author": {
+    "name": "Ross Hindhaugh",
+    "email": "ross.hindhaugh@nhct.nhs.uk"
+  },
+  "defaultLocale": "en",
+  "private": true,
+  "location": {
+    "support": {
+      "nav_bar": {
+        "url": "assets/index.html"
+      }
+    }
+  },
+  "version": "1.0.0",
+  "frameworkVersion": "2.0"
+}
