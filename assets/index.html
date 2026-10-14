@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+
+    <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+
+    <link rel="stylesheet" href="styles.css">
+
+</head>
+
+<body>
+
+    <div class="header">
+
+        <h1>Vehicle Returns AI Review</h1>
+
+        <div class="viewName">
+            View: Lease Company Confirmations
+        </div>
+
+        <div class="controls">
+
+            <button id="analyseBtn">
+                Analyse Tickets
+            </button>
+
+            <button id="stopBtn">
+                Stop Analysis
+            </button>
+
+            <button id="exportBtn">
+                Export CSV
+            </button>
+
+        </div>
+
+    </div>
+
+    <div class="progressWrapper">
+
+        <div id="progressText" class="progressText">
+            Ready
+        </div>
+
+        <div class="progressBar">
+            <div id="progressFill"></div>
+        </div>
+
+    </div>
+
+    <div class="summary">
+
+        <div
+            class="card confirmed"
+            data-filter="Confirmed">
+
+            <h3>Confirmed</h3>
+
+            <span id="confirmedCount">
+                0
+            </span>
+
+        </div>
+
+        <div
+            class="card failed"
+            data-filter="Failed Booking">
+
+            <h3>Failed Booking</h3>
+
+            <span id="failedCount">
+                0
+            </span>
+
+        </div>
+
+        <div
+            class="card review"
+            data-filter="Review Required">
+
+            <h3>Review Required</h3>
+
+            <span id="reviewCount">
+                0
+            </span>
+
+        </div>
+
+    </div>
+
+    <div class="bulkActions">
+
+        <button id="showAllBtn">
+            Show All
+        </button>
+
+        <button id="closeSelectedBtn">
+            Close Selected Confirmed
+        </button>
+
+        <button id="closeAllBtn">
+            Close All Confirmed
+        </button>
+
+    </div>
+
+    <div id="resultsHeader">
+
+        <span id="resultsCount">
+            No tickets analysed
+        </span>
+
+    </div>
+
+    <div id="ticketContainer"></div>
+
+    <script src="api.js"></script>
+    <script src="prompt.js"></script>
+    <script src="main.js"></script>
+
+</body>
+
+</html>
