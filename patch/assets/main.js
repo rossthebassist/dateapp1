@@ -169,6 +169,53 @@ function detectLeaseConfirmation(messages = []) {
   return { confirmed: false, snippet: null, author: null, messageBody: null };
 }
 
+// ---------- New: detect pending third-party confirmations (hard block) ----------
+/**
+ * Returns { pending: boolean, snippet: string|null, author: string|null }
+ * Detects explicit language indicating confirmation is awaiting a third party (e.g., "I have contacted BCA to request...").
+ */
+function detectPendingThirdParty(threadText, messages = []) {
+  const pendingRegexes = [
+    /\bi have contacted\s+[a-z0-9\-\s\.@]{1,50}\s+to\s+request\b/i,
+    /\bwill\s+confirm\b.*\b(bca|agent|third-?party)\b/i,
+    /\bawait(?:ing)?\s+confirmation\s+from\b/i,
+    /\bpending\s+confirmation\b/i,
+    /\bawait\s+confirmation\b/i,
+    /\bonce\s+i\s+have\s+an\s+update\b/i
+  ];
+
+  if (Array.isArray(messages) && messages.length) {
+    for (const m of messages) {
+      const body = (m.body || m.content || '').toLowerCase();
+      for (const re of pendingRegexes) {
+        const match = body.match(re);
+        if (match) {
+          const idx = match.index || body.indexOf(match[0]);
+          const start = Math.max(0, idx - 60);
+          const snippet = body.substring(start, start + 200).trim();
+          const author = (m.author && (m.author.name || m.author.email)) || m.from || null;
+          return { pending: true, snippet, author };
+        }
+      }
+    }
+  }
+
+  if (threadText) {
+    const lower = threadText.toLowerCase();
+    for (const re of pendingRegexes) {
+      const match = lower.match(re);
+      if (match) {
+        const idx = match.index || lower.indexOf(match[0]);
+        const start = Math.max(0, idx - 60);
+        const snippet = lower.substring(start, start + 200).trim();
+        return { pending: true, snippet, author: null };
+      }
+    }
+  }
+
+  return { pending: false, snippet: null, author: null };
+}
+
 /**
  * Optionally detect whether a message appears to be from NHS Fleet (heuristic).
  */
@@ -666,6 +713,16 @@ async function classifyTicket(messages) {
     } catch (e) {
         console.error('Failed to parse AI JSON output', e, content);
         throw new Error('AI returned invalid JSON');
+    }
+
+    // authoritative pending third-party check that always blocks confirmation
+    const pendingThirdParty = detectPendingThirdParty(threadText, messages);
+    if (pendingThirdParty.pending) {
+      result.status = "Review Required";
+      result.review_required = true;
+      result.confidence = 70;
+      result.reason = "Awaiting third-party confirmation";
+      result.summary = pendingThirdParty.snippet ? `${pendingThirdParty.snippet} — pending confirmation from third-party; review required.` : "Pending third-party confirmation; review required.";
     }
 
     // If AI returned Confirmed but tentative language exists and we do NOT have a strong lease confirmation + fleet evidence, override to Review Required
