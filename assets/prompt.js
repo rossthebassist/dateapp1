@@ -30,6 +30,18 @@ OR
 
 A lease company confirmation alone is NOT sufficient.
 
+HARD RULE:
+- If the email thread does NOT contain the original Fleet booking request or any agent-originated booking/acceptance email or quoted content from our Fleet, NEVER return "Confirmed".
+- A lease-company confirmation alone is NOT sufficient to return Confirmed.
+- If you see a lease-company confirmation but no original Fleet/agent evidence, return:
+  Status = Review Required
+  fleet_request_found = false
+  review_required = true
+  confidence = 70
+  reason = "Fleet request not found"
+- Always include a short evidence snippet (<=200 chars) in the JSON output that shows the confirmation line and the date (if any).
+- Output ONLY valid JSON (no additional commentary).
+
 If a lease company confirms a booking but no Fleet request evidence can be found:
 
 Status = Review Required
