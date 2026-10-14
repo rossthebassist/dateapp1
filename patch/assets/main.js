@@ -7,7 +7,7 @@ let analysedTickets = [];
 let confirmedTickets = [];
 let stopRequested = false;
 
-// -------------------- Helpers for fleet evidence, date and reg extraction --------------------
+// -------------------- Helpers for fleet evidence, tentative detection, date and reg extraction --------------------
 
 /**
  * Conservative detection of original fleet booking evidence in a thread.
@@ -48,61 +48,139 @@ function hasOriginalFleetBookingEvidence(threadText, ourExampleSnippet) {
 }
 
 /**
- * Detect tentative/conditional language that indicates awaiting third-party confirmation.
- * Returns { tentative: boolean, snippet: string|null }
+ * More precise tentative detection: only flags true pending-confirmation language.
+ * - threadText: full concatenated thread (string)
+ * - messages: optional array of message objects [{ author, from, body }] to allow per-message author-aware matching
+ * Returns: { tentative: boolean, snippet: string|null, author: string|null }
  */
-function detectTentativeLanguage(threadText) {
-  if (!threadText) return { tentative: false, snippet: null };
+function detectTentativeLanguage(threadText, messages = []) {
+  if (!threadText) return { tentative: false, snippet: null, author: null };
   const text = threadText.toLowerCase();
 
-  const phrases = [
-    "will advise",
-    "will confirm",
-    "once i have an update",
-    "abortive fee may apply",
-    "may apply",
-    "awaiting",
-    "pending",
-    "to be confirmed",
-    "to be confirmed by",
-    "we will advise",
-    "i have contacted",
-    "i have contacted .* to request",
-    "request the below amendment",
-    "request the amendment",
-    "await confirmation",
-    "we are awaiting",
-    "will contact",
-    "agent will confirm",
-    "bca will confirm",
-    "once i have an update, i will advise"
+  // Strong tentative regexes that indicate awaiting confirmation / conditional status
+  const tentativeRegexes = [
+    /\bwill\s+confirm\b/i,
+    /\bwill\s+advise\b/i,
+    /\bonce\s+i\s+have\s+an\s+update\b/i,
+    /\bawait(?:ing)?\s+confirmation\b/i,
+    /\bto\s+be\s+confirmed\b/i,
+    /\bawait\s+confirmation\s+from\b/i,
+    /\bpending\s+confirmation\b/i,
+    /\babortive\s+fee\s+may\s+apply\b/i,
+    /\bmay\s+apply\b/i,
+    /\bwill\s+confirm\b.*\b(bca|agent|third-?party)\b/i,
+    /\bbca\s+will\s+confirm\b/i
   ];
 
-  for (const p of phrases) {
-    if (p.includes(".*")) {
-      try {
-        const re = new RegExp(p, "i");
-        const m = text.match(re);
-        if (m) {
-          const idx = m.index || 0;
-          const start = Math.max(0, idx - 50);
-          const end = Math.min(text.length, idx + (m[0].length || 50) + 50);
-          return { tentative: true, snippet: text.substring(start, end).trim() };
-        }
-      } catch (e) {
-        // ignore invalid regex
+  // Informational template phrases we should ignore (common non-pending templates)
+  const ignoreRegexes = [
+    /\bwill\s+contact\s+you\s+by\s+phone\b/i,
+    /\bwill\s+contact\s+you\s+by\s+phone\s+or\s+text\b/i,
+    /\bthe\s+inspector\s+will\s+call\b/i,
+    /\bwill\s+call\s+again\s+when\s+they\s+are\s+outside\b/i,
+    /\ball inspectors will carry appropriate identification\b/i,
+    /\bcontact numbers for the day of collection\b/i
+  ];
+
+  // Helper: checks a body string for tentative matches while ignoring template matches
+  function findTentativeInBody(body) {
+    const lower = (body || "").toLowerCase();
+    for (const re of tentativeRegexes) {
+      const m = lower.match(re);
+      if (m) {
+        const idx = m.index || lower.indexOf(m[0]);
+        const start = Math.max(0, idx - 60);
+        const snippet = lower.substring(start, start + 200).trim();
+        return { matched: true, snippet };
       }
-    } else {
-      const idx = text.indexOf(p);
-      if (idx !== -1) {
-        const start = Math.max(0, idx - 50);
-        const end = Math.min(text.length, idx + p.length + 50);
-        return { tentative: true, snippet: text.substring(start, end).trim() };
+    }
+    return { matched: false, snippet: null };
+  }
+
+  // If message-level data available, prefer that (so we can capture author)
+  if (Array.isArray(messages) && messages.length) {
+    for (const m of messages) {
+      const body = m.body || m.content || "";
+      // Skip purely informational template lines unless a true tentative regex also matches
+      const ignored = ignoreRegexes.some(re => re.test(body));
+      const tentativeMatch = findTentativeInBody(body);
+      if (tentativeMatch.matched) {
+        // If the match is only an ignore-like phrase, continue scanning
+        const isInformationalOnly = ignored && tentativeRegexes.every(tr => {
+          return !tr.test(body);
+        });
+        if (isInformationalOnly) {
+          continue;
+        }
+        const author = (m.author && (m.author.name || m.author.email)) || m.from || null;
+        return { tentative: true, snippet: tentativeMatch.snippet, author };
       }
     }
   }
 
-  return { tentative: false, snippet: null };
+  // Fallback: check whole thread, but remove known informational templates before checking
+  let cleaned = text;
+  for (const ign of ignoreRegexes) {
+    try { cleaned = cleaned.replace(ign, ' '); } catch (e) { /* ignore */ }
+  }
+  for (const re of tentativeRegexes) {
+    const m = cleaned.match(re);
+    if (m) {
+      const idx = m.index || cleaned.indexOf(m[0]);
+      const start = Math.max(0, idx - 60);
+      const snippet = cleaned.substring(start, start + 200).trim();
+      return { tentative: true, snippet, author: null };
+    }
+  }
+
+  return { tentative: false, snippet: null, author: null };
+}
+
+/**
+ * Simple strong-positive lease confirmation detector.
+ * - messages: array of message objects [{ author, from, body }]
+ * Returns: { confirmed: boolean, snippet: string|null, author: string|null, messageBody: string|null }
+ */
+function detectLeaseConfirmation(messages = []) {
+  if (!Array.isArray(messages) || !messages.length) return { confirmed: false, snippet: null, author: null, messageBody: null };
+
+  const confirmationRegexes = [
+    /\bwe\s+are\s+pleased\s+to\s+confirm\b/i,
+    /\bcollection\s+confirmed\b/i,
+    /\bwe\s+confirm\b/i,
+    /\bcollection\s+date[:\s]/i,
+    /\bcollection\s+details\s+for\b/i,
+    /\bwe\s+have\s+booked\s+collection\b/i
+  ];
+
+  for (const m of messages) {
+    const body = (m.body || m.content || "").toLowerCase();
+    for (const re of confirmationRegexes) {
+      const match = body.match(re);
+      if (match) {
+        const idx = match.index || body.indexOf(match[0]);
+        const start = Math.max(0, idx - 60);
+        const snippet = body.substring(start, start + 200).trim();
+        const author = (m.author && (m.author.name || m.author.email)) || m.from || null;
+        return { confirmed: true, snippet, author, messageBody: m.body || m.content || null };
+      }
+    }
+  }
+  return { confirmed: false, snippet: null, author: null, messageBody: null };
+}
+
+/**
+ * Optionally detect whether a message appears to be from NHS Fleet (heuristic).
+ */
+function isFromFleetMessage(m) {
+  if (!m) return false;
+  const email = (m.author && m.author.email) || m.from || "";
+  const body = (m.body || m.content || "").toLowerCase();
+  if (!email && !body) return false;
+  const e = (email || "").toLowerCase();
+  if (e.includes("nhsfleetsolutions") || e.includes("fleet.vehiclereturns") || e.includes("no_reply@nhsfleetsolutions")) return true;
+  if (body.includes("collection request for") || body.includes("office use only: return_notify_leaseco") || body.includes("please can the above vehicle be booked in")) return true;
+  return false;
 }
 
 /**
@@ -313,16 +391,11 @@ if (response.next_page) {
                                     type: "GET"
                                 });
 
-                            const conversation =
-                                comments.comments
-                                    .map(
-                                        c => c.body || ""
-                                    )
-                                    .join("\n\n");
+                            const messages = comments.comments || [];
 
                             const result =
                                 await classifyTicket(
-                                    conversation
+                                    messages
                                 );
 
                             analysedTickets.push({
@@ -472,35 +545,44 @@ function resetDashboard() {
     );
 }
 
-async function classifyTicket(text) {
+async function classifyTicket(messages) {
+
+    // Build thread text from messages
+    const threadText = (Array.isArray(messages) ? messages.map(m => m.body || m.content || "").join("\n\n") : (messages || ""));
 
     // Detect tentative language that requires review regardless
-    const tentative = detectTentativeLanguage(text);
-    if (tentative.tentative) {
-        const leaseDate = extractFirstDateNormalized(text);
-        const regCandidate = extractRegistrationFromThread(text);
-        return {
-            registration: regCandidate || "",
-            fleet_request_found: false,
-            category: "",
-            status: "Review Required",
-            fleet_booked_date: "",
-            lease_company_date: leaseDate || "",
-            confidence: 70,
-            review_required: true,
-            summary: tentative.snippet ? `${tentative.snippet} — pending confirmation from third-party; review required.` : "Pending third-party confirmation; review required.",
-            reason: "Awaiting third-party confirmation"
-        };
-    }
+    const tentative = detectTentativeLanguage(threadText, messages);
+
+    // Detect strong lease confirmation phrases
+    const leaseConfirm = detectLeaseConfirmation(messages);
 
     // Pre-check for fleet/agent evidence. Pass a reliable snippet for quoted matching.
-    const fleetEvidenceFound = hasOriginalFleetBookingEvidence(text, "no_reply@nhsfleetsolutions.co.uk");
+    const fleetEvidenceFound = hasOriginalFleetBookingEvidence(threadText, "no_reply@nhsfleetsolutions.co.uk");
 
     // Extract lease date for reviewer context
-    const leaseDate = extractFirstDateNormalized(text);
+    const leaseDate = extractFirstDateNormalized(threadText);
 
     // Extract registration for context if possible
-    const regCandidate = extractRegistrationFromThread(text);
+    const regCandidate = extractRegistrationFromThread(threadText);
+
+    // If tentative language exists but there is also a clear lease confirmation and fleet evidence, allow further processing; otherwise short-circuit to REVIEW
+    if (tentative.tentative) {
+      if (!(leaseConfirm.confirmed && fleetEvidenceFound)) {
+        return {
+          registration: regCandidate || "",
+          fleet_request_found: false,
+          category: "",
+          status: "Review Required",
+          fleet_booked_date: "",
+          lease_company_date: leaseDate || "",
+          confidence: 70,
+          review_required: true,
+          summary: tentative.snippet ? `${tentative.snippet} — pending confirmation from third-party; review required.` : "Pending third-party confirmation; review required.",
+          reason: "Awaiting third-party confirmation"
+        };
+      }
+      // else: we have both tentative phrasing somewhere AND a clear lease confirmation + fleet evidence; allow AI to resolve nuance
+    }
 
     if (!fleetEvidenceFound) {
         // Short-circuit to REVIEW (do not call the AI) but provide useful context
@@ -537,7 +619,7 @@ async function classifyTicket(text) {
                         },
                         {
                             role: "user",
-                            content: text
+                            content: threadText
                         }
                     ],
                     temperature: 0,
@@ -586,10 +668,11 @@ async function classifyTicket(text) {
         throw new Error('AI returned invalid JSON');
     }
 
-    // If AI returned Confirmed but tentative language exists, override to Review Required
+    // If AI returned Confirmed but tentative language exists and we do NOT have a strong lease confirmation + fleet evidence, override to Review Required
     if (result.status === "Confirmed") {
-      const tentativeAfter = detectTentativeLanguage(text);
-      if (tentativeAfter.tentative) {
+      const tentativeAfter = detectTentativeLanguage(threadText, messages);
+      const leaseConfirmAfter = detectLeaseConfirmation(messages);
+      if (tentativeAfter.tentative && !(leaseConfirmAfter.confirmed && fleetEvidenceFound)) {
         result.status = "Review Required";
         result.review_required = true;
         result.confidence = 70;
