@@ -48,6 +48,64 @@ function hasOriginalFleetBookingEvidence(threadText, ourExampleSnippet) {
 }
 
 /**
+ * Detect tentative/conditional language that indicates awaiting third-party confirmation.
+ * Returns { tentative: boolean, snippet: string|null }
+ */
+function detectTentativeLanguage(threadText) {
+  if (!threadText) return { tentative: false, snippet: null };
+  const text = threadText.toLowerCase();
+
+  const phrases = [
+    "will advise",
+    "will confirm",
+    "once i have an update",
+    "abortive fee may apply",
+    "may apply",
+    "awaiting",
+    "pending",
+    "to be confirmed",
+    "to be confirmed by",
+    "we will advise",
+    "i have contacted",
+    "i have contacted .* to request",
+    "request the below amendment",
+    "request the amendment",
+    "await confirmation",
+    "we are awaiting",
+    "will contact",
+    "agent will confirm",
+    "bca will confirm",
+    "once i have an update, i will advise"
+  ];
+
+  for (const p of phrases) {
+    if (p.includes(".*")) {
+      try {
+        const re = new RegExp(p, "i");
+        const m = text.match(re);
+        if (m) {
+          const idx = m.index || 0;
+          const start = Math.max(0, idx - 50);
+          const end = Math.min(text.length, idx + (m[0].length || 50) + 50);
+          return { tentative: true, snippet: text.substring(start, end).trim() };
+        }
+      } catch (e) {
+        // ignore invalid regex
+      }
+    } else {
+      const idx = text.indexOf(p);
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 50);
+        const end = Math.min(text.length, idx + p.length + 50);
+        return { tentative: true, snippet: text.substring(start, end).trim() };
+      }
+    }
+  }
+
+  return { tentative: false, snippet: null };
+}
+
+/**
  * Extract the first plausible date and normalise to DD/MM/YYYY.
  */
 function extractFirstDateNormalized(text) {
@@ -416,6 +474,25 @@ function resetDashboard() {
 
 async function classifyTicket(text) {
 
+    // Detect tentative language that requires review regardless
+    const tentative = detectTentativeLanguage(text);
+    if (tentative.tentative) {
+        const leaseDate = extractFirstDateNormalized(text);
+        const regCandidate = extractRegistrationFromThread(text);
+        return {
+            registration: regCandidate || "",
+            fleet_request_found: false,
+            category: "",
+            status: "Review Required",
+            fleet_booked_date: "",
+            lease_company_date: leaseDate || "",
+            confidence: 70,
+            review_required: true,
+            summary: tentative.snippet ? `${tentative.snippet} — pending confirmation from third-party; review required.` : "Pending third-party confirmation; review required.",
+            reason: "Awaiting third-party confirmation"
+        };
+    }
+
     // Pre-check for fleet/agent evidence. Pass a reliable snippet for quoted matching.
     const fleetEvidenceFound = hasOriginalFleetBookingEvidence(text, "no_reply@nhsfleetsolutions.co.uk");
 
@@ -507,6 +584,18 @@ async function classifyTicket(text) {
     } catch (e) {
         console.error('Failed to parse AI JSON output', e, content);
         throw new Error('AI returned invalid JSON');
+    }
+
+    // If AI returned Confirmed but tentative language exists, override to Review Required
+    if (result.status === "Confirmed") {
+      const tentativeAfter = detectTentativeLanguage(text);
+      if (tentativeAfter.tentative) {
+        result.status = "Review Required";
+        result.review_required = true;
+        result.confidence = 70;
+        result.reason = "Awaiting third-party confirmation";
+        result.summary = tentativeAfter.snippet ? `${tentativeAfter.snippet} — pending confirmation from third-party; review required.` : "Pending third-party confirmation; review required.";
+      }
     }
 
     // Safety check: no Fleet request means no automatic confirmation
